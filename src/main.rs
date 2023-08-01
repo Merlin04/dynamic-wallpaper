@@ -22,7 +22,7 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     protocol::wl_pointer::WlPointer,
-    protocol::{wl_pointer, wl_shm},
+    protocol::wl_shm,
     protocol::wl_output::WlOutput,
     globals::registry_queue_init,
     Connection,
@@ -30,6 +30,7 @@ use wayland_client::{
     protocol::wl_seat::WlSeat,
     protocol::wl_surface::WlSurface
 };
+use wayland_client::globals::GlobalList;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let conn = Connection::connect_to_env().unwrap();
@@ -38,9 +39,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor is not available");
     let layer_shell = LayerShell::bind(&globals, &qh).expect("layer_shell is not available");
-
-    // using wl_shm for software rendering to buffer
-    let shm = Shm::bind(&globals, &qh).expect("wl_shm is not available");
 
     // get outputs (for now, just use the first one)
     let mut outputs_event_queue = conn.new_event_queue();
@@ -59,32 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dims = info.logical_size.expect("Output has no size");
     let (size_x, size_y) = (dims.0 as u32, dims.1 as u32);
 
-    let registry_state = RegistryState::new(&globals);
-
-    let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Background, Some("m04_dynamic_wallpaper"), None);
-    layer.set_size(size_x, size_y);
-    layer.set_anchor(Anchor::BOTTOM);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.commit();
-
-    let pool = SlotPool::new((size_x * size_y * 4) as usize, &shm).expect("Failed to create slot pool");
-
-    let mut dw_layer = DWLayer {
-        registry_state,
-        seat_state: SeatState::new(&globals, &qh),
-        output_state: OutputState::new(&globals, &qh),
-        shm,
-
-        exit: false,
-        first_configure: true,
-        pool,
-        width: size_x,
-        height: size_y,
-        shift: None,
-        layer,
-        pointer: None
-    };
+    let mut dw_layer = DWLayer::new(&globals, &qh, size_x, size_y, compositor, layer_shell);
 
     loop {
         event_queue.blocking_dispatch(&mut dw_layer).unwrap();
@@ -145,7 +118,8 @@ struct DWLayer {
     height: u32,
     shift: Option<u32>,
     layer: LayerSurface,
-    pointer: Option<wl_pointer::WlPointer>
+    pointer: Option<WlPointer>,
+    pointer_position: (f64, f64)
 }
 
 impl CompositorHandler for DWLayer {
@@ -215,7 +189,13 @@ impl PointerHandler for DWLayer {
             if &event.surface != self.layer.wl_surface() {
                 continue;
             }
-            // TODO
+
+            match event.kind {
+                Motion { .. } => {
+                    // println!("pointer move {:?}", event.position);
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -261,6 +241,37 @@ impl DWLayer {
         self.layer.commit();
 
         // TODO - save and reuse buffer when window size unchanged (especially useful for damage tracking)
+    }
+
+    fn new(globals: &GlobalList, qh: &QueueHandle<DWLayer>, size_x: u32, size_y: u32, compositor: CompositorState, layer_shell: LayerShell) -> DWLayer {
+        let surface = compositor.create_surface(&qh);
+        let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Background, Some("m04_dynamic_wallpaper"), None);
+        layer.set_size(size_x, size_y);
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.commit();
+
+        // using wl_shm for software rendering to buffer
+        let shm = Shm::bind(&globals, &qh).expect("wl_shm is not available");
+
+        let pool = SlotPool::new((size_x * size_y * 4) as usize, &shm).expect("Failed to create slot pool");
+
+        DWLayer {
+            registry_state: RegistryState::new(&globals),
+            seat_state: SeatState::new(&globals, &qh),
+            output_state: OutputState::new(&globals, &qh),
+            shm,
+
+            exit: false,
+            first_configure: true,
+            pool,
+            width: size_x,
+            height: size_y,
+            shift: None,
+            layer,
+            pointer: None,
+            pointer_position: (0.0, 0.0)
+        }
     }
 }
 
